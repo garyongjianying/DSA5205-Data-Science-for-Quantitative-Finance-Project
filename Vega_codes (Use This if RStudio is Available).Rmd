@@ -1,0 +1,895 @@
+---
+title: "\\vspace{-1.5cm} \\large \\textbf{DSA5205 Project}  \n\\normalsize Semester 1 AY22/23"
+author: |
+  | \vspace{-1cm}
+  | \normalsize \textbf{Vega}
+  | \normalsize Shaunn Tan De Hui (A0087785H), Ong Jian Ying Gary (A0155664X)
+  | \normalsize June Aw Ying Rong (A0170256J), Liu Xiaomin (A0232209N)
+  | \normalsize Jasper Tan Yi An (A0183578M)
+mainfont: Arial
+fontsize: 12pt
+geometry: margin=2.5cm
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    extra_dependencies: setspace
+    number_sections: true
+---
+\onehalfspacing
+\vspace{-1cm}
+# Executive Summary
+Equities is a common asset that is affordable and manageable by retail investors. Our objective is to provide an equities allocation strategy to serve as a guide for personal wealth accumulation without the need for Portfolio Managers.
+
+Our method, "Limited Lookback Portfolio Optimization Framework", concurrently performs portfolio selection, risk minimization and return maximization. It is built upon the Markowitz model, which was foundational to the Modern Portfolio Theory (MPT) [1]. To account for varying macroeconomic conditions over time that translates to varying regimes in the equities market, we limit the number of periods of returns data used for portfolio selection ("Limited Lookback"). We compared optimizing portfolios with the Markowitz model and Michaud's Resampled-Efficiency method ("RE Method") [2]. Finally, we showed that utilizing our framework and the Markowitz model we are able to achieve better returns than the NASDAQ-100 index.
+
+The performance of our method was measured by Cumulative Returns, as well as Value at Risk (VaR) and Expected Shortfall (ES), computed using Monte-Carlo Simulation under a Multivariate Skewed Student-t Distribution fitted to all available returns data at and before the portfolio selection date.
+
+Each group member’s contributions are as follows:  
+- June Aw Ying Rong (A0170256J): Literature Review, Stock Selection, Portfolio Framework  
+- Liu Xiaomin (A0232209N): Stock Selection, Performance Metrics  
+- Ong Jian Ying Gary (A0155664X): Exploratory data analysis (EDA), fitting distributions, Monte-Carlo VaR and ES  
+- Jasper Tan Yi An (A0183578M): Monte-Carlo VaR and ES  
+- Shaunn Tan De Hui (A0087785H): Lookback period comparisons, performance analysis  
+\newpage
+
+```{r setup, include=FALSE}
+set.seed(1)
+rand_seed <- knitr::rand_seed
+knitr::opts_chunk$set(eval = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache.extra = rand_seed)
+options(scipen = 999)
+library(quantmod)
+library(e1071)
+library(MASS)
+library(zoo)
+library(ggplot2)
+library(PerformanceAnalytics)
+library(quadprog)
+library(GGally)
+library(ggpmisc)
+library(dplyr)
+library(stringr)
+library(mnormt) # provides functions for computing density & distribution function of multivariate t random variables.
+library(sn) #mst.nple for fitting of skewed multi-t distribution directly.
+library(fCopulae)
+library(ks)
+library(psych)
+library(dgof) # for Kolmogorov-Smirnov Test
+library(knitr)
+library(copula)
+set.seed(1)
+```
+# Introduction
+Asset owners endeavor to accumulate and maintain wealth through asset allocation strategies. Such goals can be managed by professional portfolio managers which, to have the privilege of engaging one, is often out of reach for individuals. 
+
+Equities being a class of assets that is affordable and accessible, can be easily managed by retail investors. Thus, our objective is to provide an equities allocation strategy to serve as a guide for personal wealth accumulation without the need to engage portfolio managers.
+
+While machine learning driven techniques perform tasks such as signal prediction and price forecasting well, such methods fall short to provide a viable solution for portfolio selection. To achieve the goal of portfolio selection, risk minimization and return maximization concurrently, we turn to the Markowitz model proposed by Harry Markowitz in his seminal 1952 paper [1]. 
+
+Additionally, fluctuations in macroeconomic conditions could translate to varying regimes in the equities market. Thus, it may be wise to include only relevant data when performing portfolio selection. As the quantity of relevant data would be dependent on the list of stocks available to select, we compare the performance of the model with different “lookback periods” under our selected list of stocks. 
+
+As a robustness check, we compare the Markowitz model with Michaud’s Resampled-Efficiency method proposed in 2007 [2].
+
+This report will proceed as follows: (1) discussion of stock selection process, (2) assessment of the two portfolio selection methodology aforementioned, (3) back-testing of methodologies with varying lookback periods, (4) observations from experiments and identification method that worked best for our selected list of stocks.
+
+# Stock Selection
+Different economic sectors' performance varies in the same market condition. As an example, during the COVID-19 pandemic, the stock prices of pharmaceutical companies soared with the introduction of COVID-19 vaccines while the general market condition remained bearish. It is therefore critical to have a well-diversified portfolio where returns are not determined by a single stock to weather unforeseen circumstances.
+
+As such, we select 10 NASDAQ traded stocks from a diverse range of sectors with leading market capitalisation for constructing our portfolio:  
+Technology: Apple Inc., Microsoft Corporation  
+Telecommunications: Cisco Systems, Inc., T-Mobile US, Inc.  
+Healthcare: UnitedHealth Group Inc., Johnson & Johnson  
+Financials: JP Morgan Chase & Co., Bank of America Corporation  
+Consumer Staples: Coca-Cola Company, Diageo plc  
+
+```{r setstocks, echo=FALSE, warning=FALSE, error=FALSE}
+  stocks <- c('AAPL', 'MSFT', 'CSCO', 'TMUS', 'UNH', 'JNJ', 'JPM', 'BAC', 'KO', 'DEO')
+```
+
+# Portfolio Optimisation
+
+## Model 1: Markowitz model
+Under the Markowitz model, the efficient frontier can be derived using quadratic optimization techniques. At each level of expected returns, the minimum variance portfolio is obtained by finding the vector of weights that minimizes the risk of the selected portfolio. The efficient frontier comprises the set of such weight vectors at each level of expected returns. Amongst the set of weight vectors, the tangency portfolio, i.e. the portfolio with the maximum Sharpe ratio, can be identified.
+
+The curvature of the Efficient Frontier reveals the benefits of diversification and proved diminishing marginal return to risk. It rates portfolios on a coordinate plane, with risk on the x-axis and returns on the y-axis. A risk averse investor may pick a portfolio that lies on the left side of the frontier and a risk seeking investor may select the opposite. In our case, we select the tangency portfolio.
+
+## Model 2: Michaud’s Resampled-Efficiency Method
+The Resampled-Efficiency portfolio optimization aims to minimize the impact of estimation risk on the portfolio composition to achieve balanced asset allocation and improved performance as compared to Markowitz’s mean-variance optimization method.
+
+The basic concept of Michaud’s resampled efficiency consists of the following steps:
+1. Generate sequence of returns, by using Monte Carlo simulation
+2. Determine portfolio weights for each resample
+3. Average the obtained portfolio weights to obtain optimal portfolio weights.
+
+We compare the performance of both methods under our framework.
+
+# Performance Metrics
+We utilize Cumulative Returns, Value at Risk (VaR) and Expected Shortfall (ES) to measure the performance of a selected portfolio. The best fitted distribution parameters are used to generate samples for the computation of VaR and ES at $\alpha = 0.01$ using Monte-Carlo simulation.
+
+## Cumulative Returns
+The trajectory of our portfolio value is simulated by back-testing each assessed method, the best method will provide the highest cumulative return at the end of our investment horizon.
+
+## Value at Risk (VaR) & Expected Shortfall (ES)
+VaR quantifies the extent of possible loss over a time horizon at the $\alpha$-th quantile. We set $\alpha$ at 1% significance level and time period at 1 day duration to compute the 99% 1-day VaR with associated weights for our portfolio. 
+ 
+ES indicates the expected loss when the 1% VaR is exceeded. ES tells what is the expectation of loss of 1% of this outcome.
+
+## Fitting Distributions
+An appropriate fitted distribution representing returns of the portfolio enables model evaluation using VaR and ES. We explore using multivariate distributions and copulas to model the returns for the computation of VaR and ES. 
+
+# Limited Lookback Portfolio Optimization Framework
+Our portfolio selection framework is meant to be easily interpretable and applied by a typical retail investor. To mimic practices common to retail investors in our methodology, the following assumptions are made: 
+
+1. Start investing on the first trading day of the second half of 2021, i.e. 1 July 2021  
+2. Risk-free rate is fixed at 2% per annum  
+3. Brokerage fee is 0.2% of value traded  
+4. Starting value of the portfolio is $10,000  
+5. Portfolio is rebalanced at the end of every month to manage transaction costs  
+6. No short-selling  
+7. Fractional investing (partial units) is allowed  
+
+Monthly rebalancing is practical for retail investors as brokerage fees are typically derived as a percentage of value traded. Rebalancing frequently substantially increases the cost of maintaining a portfolio of stocks according to the recommendation from a model. Short selling was excluded from the portfolio optimization process as shares have to be borrowed indefinitely to maintain a short-sold portfolio. Without prudence, the cost may easily outweigh the returns from a bearish market. Finally, fractional investing is allowed primarily to simplify the analysis.
+
+The framework can be summarized as follows: (1) identify a list of stocks for portfolio construction, (2) at last trading day of each month, a new portfolio comprising of the 10 stocks will be selected for the next month, (3) the new portfolio is presumably bought at the closing price on the last trading day of the month and will be held for the entirety of the next month prior to rebalancing at month’s end. 
+
+Backtesting is performed by repeating steps (2) to (3) while varying the lookback period used in step (2) to identify the best returns for selected list of stocks and determine model performance.
+
+```{r setvars, echo=FALSE, warning=FALSE, error=FALSE}
+rf_rate <- 0.02 # risk-free rate
+type <- 'daily'  # 'daily' or 'monthly'
+start <- '2017-09-30'
+end <- '2022-11-01'
+first_month <- '2021-07-01'
+n_lags <- 3
+commission <- 0.002 # brokerage fees.
+start_value <- 10000
+```
+
+# Exploratory Data Analysis
+The daily returns dataset for the 10 chosen stocks is obtained from Yahoo! Finance using `quantmod`. We first determine the distribution of the stock returns for the purpose of computing VaR and ES of our selected portfolios.
+
+```{r getdata, echo=FALSE, warning=FALSE, error=FALSE}
+df_d <- data.frame()
+df_m <- data.frame()
+for (stock in stocks) {
+  data <- getSymbols(stock, src= "yahoo", from=format(as.Date(start),"%Y-%m-%d"), 
+                     to=format(as.Date(end),"%Y-%m-%d"), auto.assign = F)
+  # Open,High,Low,Close,Volume,Adjusted.
+  dr <- dailyReturn(data[,ncol(data)])
+  mr <- monthlyReturn(data[,ncol(data)])
+  colnames(dr) <- c(stock)
+  colnames(mr) <- c(stock)
+  if (ncol(df_d) == 0) {
+    df_d <- data.frame(dr)
+    df_m <- data.frame(mr)
+  } else {
+    df_d <- cbind(df_d, dr)
+    df_m <- cbind(df_m, mr)
+  }
+}
+ggpairs(df_d, axisLabels='none', 
+        upper = list(continuous = wrap("cor", size = 3)),
+        lower = list(continuous = wrap('points', size = 0.3)), progress = F)
+```
+The pairplot of returns shows that there are strong correlations between the returns for some pairs of stocks, especially among banking sector stocks (JPM & BAC).
+
+To determine the appropriate distribution to model the returns of a specific stock, we perform the following tests at the 5% significance level:
+
+1. Shapiro-Wilks test for normality  
+2. One-sample Kolmogorov-Smirnov test against symmetric student-t distribution  
+3. One-sample Kolmogorov-Smirnov test against skewed student-t distribution  
+
+\small
+```{r fitdist, echo=FALSE, warning=FALSE, error=FALSE}
+# initialize vectors
+mean_all = rep(0,length(stocks))
+sd_all = rep(0,length(stocks))
+skewness_all = rep(0,length(stocks))
+kurtosis_all = rep(0,length(stocks))
+shapiro_pval_all = rep(0,length(stocks))
+onesample_ks_tdist_pval_all = rep(0,length(stocks))
+onesample_ks_skewtdist_pval_all = rep(0,length(stocks))
+tfunct = function(k, nu){pt(k, df=nu)}
+skewtfunct = function(k, dp){pst(k, dp=dp)}
+
+# compute parameters
+for (i in 1:10){
+  mean_all[i] = mean(df_d[,i])
+  sd_all[i] = sd(df_d[,i])
+  skewness_all[i] = skewness(df_d[,i])
+  kurtosis_all[i] = kurtosis(df_d[,i])
+  shapiro_pval_all[i] = shapiro.test(df_d[,i])$p.value
+  
+  # fit t-dist for data
+  t_params = fitdistr((df_d[,i]), 't')
+  mean_t = t_params$estimate[1]
+  scale_t = t_params$estimate[2]
+  df_t = t_params$estimate[3]
+  sd_t = scale_t*sqrt(df_t/(df_t-2)) # formula for standard deviation for student t-distribution.
+  
+  # store all the tdistribution p-values for one-sample KS test
+  onesample_ks_tdist_pval_all[i] = ks.test(df_d[,i], "tfunct", nu=df_t)$p.value
+  
+  # fit skew-t for data
+  fit1 = st.mple(matrix(1,length(df_d[,i]),1), y=df_d[,i], dp=c(mean(df_d[,i]), sd(df_d[,i]), 0, 10))
+  # getting the direct parameters from fit for flow 1- after fitting skewed t
+  est1 = fit1$dp
+  # store all the skewt-distribution p-values for one-sample KS test
+  onesample_ks_skewtdist_pval_all[i] = ks.test(df_d[,i], "skewtfunct", dp=est1)$p.value
+}
+
+stats_all = cbind(round(mean_all,2),round(sd_all,2),round(skewness_all,2),round(kurtosis_all,2),
+                  ifelse(shapiro_pval_all<0.05, 'Reject', 'Do Not Reject'),
+                  ifelse(onesample_ks_tdist_pval_all<0.05, 'Reject', 'Do Not Reject'),
+                  ifelse(onesample_ks_skewtdist_pval_all<0.05, 'Reject', 'Do Not Reject'))
+
+descriptive_df <- data.frame(stats_all)
+rownames(descriptive_df) = stocks
+colnames(descriptive_df) = c('Mean','SD','Skew','Kurtosis','H0: From Normal dist','H0: From t-dist','H0: From skewed student-t')
+kable(descriptive_df)
+```
+\normalsize
+
+Based on the test statistics, we reject the null hypothesis that the returns of each stock is drawn from a normal distribution or symmetric student-t distribution. The skewed student-t distribution appears to be appropriate for half of the selected stocks.
+
+The stocks returns are all correlated, exhibiting skewness with some kurtosis in excess of a normal distribution. We will use the Multivariate Skewed Student-t Distribution to model the returns for computation of VaR and ES under the Monte-Carlo approach.
+
+## Modeling Returns: Multivariate Student-t, Skewed Student-t Distribution, Copulas
+Based on the previous results, we generated synthetic data using the symmetric multivariate student-t distribution, multivariate skewed student-t distribution and Meta-t copula to model the joint distribution of the stock returns of all 10 stocks. The pair plots comparing the synthetic data to actual returns data are excluded to keep the report concise. The code to generate the pair plots is provided.
+
+```{r fitmvt, echo=FALSE, warning=FALSE, error=FALSE}
+# set range of DOF and check the value of loglikelihood.
+# df = seq(3,30,0.01)
+# n = length(df_d)
+# loglik = rep(0,n)
+# # 1. compute the MLE of mean and scale matrix with DOF in the sequence range.
+# for(i in 1:n){
+#   fit = cov.trob(df_d,nu=df[i]) # cov.trob estimates the scale matrix
+#   loglik[i] = sum(log(dmt(df_d, mean=fit$center,
+#                           S = fit$cov, df = df[i])))
+# }
+# index=which.max(loglik)
+# df[index]
+# fit_model = cov.trob(df_d,cor = TRUE,nu=df[index])
+# aic_t = -max(2 * loglik) + 2 *(length(fit_model$center) + (sqrt(length(fit_model$cov))*(sqrt(length(fit_model$cov))+1)/2) + length(df[index]))
+```
+<!-- Fitting and generating synthetic data from multivariate skewed student-t distribution -->
+```{r fitmvst, echo=FALSE, warning=FALSE, error=FALSE}
+# fit_skewt = mst.mple(y = df_d, penalty = NULL)
+# random <- data.frame(rmst(n=150,dp = fit_skewt$dp))
+# colnames(random) <- stocks
+# aic_skewt <- -2 * fit_skewt$logL + 2*(length(fit_skewt$dp$beta) + 0.5*sqrt(length(fit_skewt$dp$Omega))*(sqrt(length(fit_skewt$dp$Omega))+1) + length(fit_skewt$dp$alpha) + length(fit_skewt$dp$nu)) 
+# ggpairs(random, axisLabels='none', 
+#         upper = list(continuous = wrap("cor", size = 3)),
+#         lower = list(continuous = wrap('points', size = 0.3)), progress = F)
+```
+<!-- Fitting and generating synthetic data from Meta-t copula -->
+```{r fitcopulas1, echo=FALSE, warning=FALSE, error=FALSE}
+# for (i in 1:10) {
+#     # fitting skewed t distribution as MARGINAL to data for each of the stocks.
+#     # for initialization where i=1, we set u_all = u and z_all = z.
+#     fit = st.mple(y=as.numeric(df_d[,i]))
+#     est = fit$dp
+#     est_all = est
+#     # get uniform transformed data
+#     u = pst(as.numeric(df_d[,i]), dp=est)
+#   if (i == 1){
+#     u_all <- u
+#   } else {
+#     u_all <- cbind(u_all,u)
+#   }
+# }
+# u_all <- data.frame(u_all)
+# colnames(u_all) <- stocks
+```
+```{r fitcopulas2, echo=FALSE, warning=FALSE, error=FALSE}
+# kendall_corr_test = corr.test(u_all, method='kendall')
+# kendall_corr_matrix = data.frame(kendall_corr_test$r)
+# # apply functions to kendall corr matrix.
+# funct <- function(x){
+#   return (sin(x*pi/2))}
+# kendall_corr_matrix_df = data.frame(lapply(kendall_corr_matrix,funct))
+# rownames(kendall_corr_matrix_df) = stocks
+# 
+# spearman_corr_test = corr.test(u_all, method='spearman')
+# spearman_corr_matrix_df = data.frame(spearman_corr_test$r)
+# 
+# # Fit copulas
+# # mpl - maximum pseudo-likelihood estimation.
+# Ct = fitCopula(copula=tCopula(dim=10), data=u_all, method='mpl')
+# aic_tcopula = -2*Ct@loglik+2*length(Ct@estimate)
+# 
+# # fit Gaussian copula:
+# Cgauss = fitCopula(copula=normalCopula(dim = 10), data=u_all,method="mpl")
+# aic_gaussiancopula = -2*Cgauss@loglik+2*length(Cgauss@estimate)
+# 
+# # Fit Frank Copula
+# Cfr = fitCopula(copula=frankCopula(dim=10), data=u_all,method='mpl')
+# aic_frankcopula = -2*Cfr@loglik+2*length(Cfr@estimate) 
+# 
+# ## clayton Copula
+# Ccl = fitCopula(copula=claytonCopula(dim=10), data=u_all, method="mpl")
+# aic_claytoncopula = -2*Ccl@loglik+2*length(Ccl@estimate)
+# 
+# ## Joe Copula
+# Cj = fitCopula(copula=joeCopula(dim=10), data=u_all, method="mpl")
+# aic_joecopula = -2*Cj@loglik+2*length(Cj@estimate)
+# 
+# ## Gumbel Copula
+# Cg = fitCopula(copula=gumbelCopula(dim=10), data=u_all, method="mpl")
+# aic_gumbelcopula = -2*Cg@loglik+2*length(Cg@estimate)
+# 
+# Copula <- c('Meta-t','Meta-Gaussian','Frank','Clayton','Joe','Gumbel')
+# aic <- data.frame(c(aic_tcopula, aic_gaussiancopula, aic_frankcopula, aic_claytoncopula, aic_joecopula, aic_gumbelcopula))
+# colnames(aic) <- c('AIC')
+# rownames(aic) <- Copula
+# kable(aic)
+```
+<!-- With the lowest AIC, the Meta-t Copula is used to model our dataset when estimating VaR and ES under the copulas approach. -->
+```{r randomcopulas, echo=FALSE, warning=FALSE, error=FALSE}
+# random_cop <- data.frame(rCopula(100,tCopula(param=Ct@estimate[1], dim=10,
+#                     df=round(Ct@estimate[2]))))
+# colnames(random_cop) <- stocks
+# ggpairs(random_cop, axisLabels='none',
+#         upper = list(continuous = wrap("cor", size = 3)),
+#         lower = list(continuous = wrap('points', size = 0.3)), progress = F)
+```
+
+## EDA Summary
+By comparing the transformed datasets with randomly generated data from the fitted Meta-t Copula, the Copulas method did not model the dataset as well as the Multivariate Skewed Student-t Distribution method. This is evident from visual inspection of the data points, and correlation values.
+
+Each return series in our dataset exhibits fat tails and skewness. Amongst the two models tested, the Multivariate Skewed Student-t Distribution is a stronger candidate for modeling which enables better measurement of VaR and ES of our selected portfolio.
+
+# Experimenting with our Framework
+
+Having selected the list of stocks, we set the number of lookback periods as $n = 3$ and the first portfolio is selected at the end of June 2021 and held from July 2021. We perform backtesting by simulating the purchase of stocks based on the optimal portfolio. To compute the portfolio’s VaR and ES, we utilize the Monte Carlo approach, fitting Multivariate Skewed Student-t Distribution to all available returns data at and before the portfolio selection date.
+
+## Markowitz Model
+
+```{r MPT, echo=FALSE, warning=FALSE, error=FALSE}
+options(dplyr.summarise.inform = FALSE)
+
+# prepare some functions for solving portfolio and obtaining VaR/ES
+markowitz <- function(data, mean_vect, n_samples, type){
+
+    # solve portfolio
+    n_tries <- n_samples
+    n_stocks <- ncol(data)
+
+    cov_mat <- cov(data) # covariance matrix.
+    sd_vect <- sqrt(diag(cov_mat)) # standard deviation vector, diagonal of the covariance matrix.
+    Amat = cbind(rep(1, n_stocks), mean_vect, diag(1, nrow = n_stocks)) # setting the constraint matrix.
+    muP = seq(min(mean_vect) + 0.0001, max(mean_vect) - 0.0001,
+              length = n_tries)
+    # muP are the possible values of the expected return for 1000 different target return values
+    #To prevent numerical errors, the target expected returns will start 0.0001
+    #above the smallest expected stock return and end 0.0001 below the largest expected stock return
+    sdP = muP # setting up the storage of std dev of portfolio
+    weights = matrix(0, nrow = n_tries, ncol = n_stocks) # setting up storage of weights of portfolio
+
+    for (i in 1:length(muP)) {# find the optimal portfolios for each target expected return.
+      bvec = c(1, muP[i], rep(0,n_stocks)) # constraint vector
+       result =
+       solve.QP(Dmat = 2 * cov_mat, dvec = rep(0, n_stocks),
+             Amat = Amat, bvec = bvec, meq = 2)
+        sdP[i] = sqrt(result$value) # standard deviation for each targeted expected return
+        weights[i,] = result$solution # weights of portfolio for each targeted expected return
+    }
+    return (list(muP,sdP,weights))
+}
+
+get_VaR_ES_tcopula = function(data, n_samples, w, alpha){
+  stocknames <- colnames(data)
+  n_stocks <- ncol(data)
+  all_var <- c()
+  all_sim <- c()
+  # fit skewed t dist
+  for (j in 1:5) {
+    # print(j)  
+    for (i in 1:n_stocks) {
+      # fitting skewed t distribution as MARGINAL to data for each of the stocks.
+      # for initialization where i=1, we set u_all = u and z_all = z.
+      fit = st.mple(y=as.numeric(data[,i]))
+  
+      est = fit$dp
+      est_all = est
+      # get uniform transformed data
+      u = pst(as.numeric(data[,i]), dp=est)
+      if (i == 1){
+        u_all <- u
+        params <- est
+      } else {
+        u_all <- cbind(u_all,u)
+        params <- rbind(params,est)
+      }
+    }
+    u_all <- data.frame(u_all)
+    colnames(u_all) <- stocknames
+    
+    # fit meta-t copula
+    fitted_copula = fitCopula(copula=tCopula(dim=n_stocks), data=u_all, method='mpl')
+    
+    # generate n_samples using our fitted tCopula
+    sim <- rCopula(n_samples,tCopula(param=fitted_copula@estimate[1], dim=n_stocks,
+                                     df=round(fitted_copula@estimate[2])))
+
+    # get quantiles from marginals
+    for (s in 1:n_stocks){
+      if (s == 1) {
+        z <- qst(sim[,s], xi = params[s,1], omega = params[s,2], 
+                           alpha = params[s,3], nu = params[s,4])
+      } else {
+        next_z <- qst(sim[,s], xi = params[s,1], omega = params[s,2], 
+                      alpha = params[s,3], nu = params[s,4])
+        z <- cbind(z,next_z)
+      }
+    }
+  
+    # finding the alpha-th VaR for 1-day duration (we use 0.01 in our experiments)
+    all_losses_percent = sort(z %*% w)
+    n <- length(all_losses_percent)
+  
+    # alpha-th VaR for our fitted copula with skew-t marginal.
+    VaR <- all_losses_percent[alpha*n_samples]
+    
+    # find the expected shortfall for the fitted copula
+    # find the expected value of outcomes where losses exceed alpha-th VaR.
+    all_sim <- rbind(all_sim,all_losses_percent) 
+    all_var <- rbind(all_var,VaR)
+  }
+  
+  var <- mean(all_var)
+  es <- mean(all_sim[all_sim < var])
+
+  return (list(abs(var),abs(es)))
+}
+
+get_VaR_ES_mvst <- function(data, n_samples, w, alpha){
+  stocknames <- colnames(data)
+  n_stocks <- ncol(data)
+  all_var <- c()
+  all_sim <- c()
+  for (j in 1:5) {
+    # print(j)
+    fit_skewt = mst.mple(y = data, penalty = NULL)
+    z <- data.frame(rmst(n=n_samples,dp = fit_skewt$dp))
+    colnames(z) <- stocks  # fit skewed t dist
+  
+    # finding the alpha-th VaR for 1-day duration (we use 0.01 in our experiments)
+    all_losses_percent = sort(as.matrix(z) %*% w)
+    n <- length(all_losses_percent)
+  
+    # alpha-th VaR for our fitted copula with skew-t marginal.
+    VaR <- all_losses_percent[alpha*n_samples]
+    
+    # find the expected shortfall for the fitted copula
+    # find the expected value of outcomes where losses exceed alpha-th VaR.
+    all_sim <- rbind(all_sim,all_losses_percent) 
+    all_var <- rbind(all_var,VaR)
+  }  
+  
+  var <- mean(all_var)
+  es <- mean(all_sim[all_sim < var])
+
+  return (list(abs(var),abs(es)))
+}
+
+go <- function(n_lags, solver, getallvar = FALSE, getlastvar = TRUE){
+  
+  dates <- data.frame(rownames(df_d))
+  colnames(dates) <- c('date')
+  dates <- cbind(dates,str_split_fixed(dates$date, "-",3))
+  colnames(dates) <- c('date','year','month')
+  dates <- dates[,-ncol(dates)]
+  dates <- dates %>% 
+    group_by(year, month) %>% 
+    summarise(startdate = min(date), enddate = max(date))
+  dates$start_minuslags <- dplyr::lag(dates$startdate, n = n_lags)
+  dates$start_minus1d <- dplyr::lag(dates$enddate, n = 1)
+  dates <- data.frame(na.omit(dates))
+  dates <- dates[dates['startdate'] >= first_month,]
+  
+  columns <- c('PortfolioSelectedOn','PortfolioAsAt','NextRebalance',stocks,'RF','ER','ER_M','Sharpe', 'NextMonthReturns','PortfolioAbsChange', 'VaR (Copula)', 'ES (Copula)', 'VaR (MVST)', 'ES (MVST)', 'Volatility', 'Ex-Post Sharpe')
+  table_out <- data.frame(matrix(nrow = 0, ncol = length(columns)))
+  colnames(table_out) <- columns
+  
+  # take past n_lags-months of data to compute min risk portfolio at each return
+  # take computed weights and get actual returns for the following month
+  for (m in 1:(nrow(dates))){
+  # for (i in 1:2){
+    # start of the month
+    start<-format(as.Date(as.character(dates[m,5])),"%Y-%m-%d")
+    # end of the month
+    end<-format(as.Date(as.character(dates[m,3])),"%Y-%m-%d")
+    end2<-format(as.Date(as.character(dates[m,4])),"%Y-%m-%d")
+    
+    # getting the range of days between start and end day.
+    df_d_this<-df_d[rownames(df_d) >= start & rownames(df_d) < end,] # exclude the last day of the month as this is when the portfolio is rebalanced for next month
+    # getting the range of months between start and end month.
+    df_m_this<-df_m[rownames(df_m) >= start & rownames(df_m) < end,]
+    # use all historical data to compute VaR and ES
+    df_d_forvares<-df_d[rownames(df_d) < end,]
+    df_m_expostsharpe<-df_m[rownames(df_m) < end2,]
+    sd_hist <- apply(df_m_expostsharpe,2,sd)
+
+    # MARGIN = 2 for apply function, which means apply by column average to get a single value.
+    mean_vect_d <- apply(df_d_this,2,mean)
+    mean_vect_m <- apply(df_m_this,2,mean)
+    
+    # type constant is already defined at the top.
+    if (type == 'daily') {
+      data <- df_d_this
+      n_periods <- 253
+      mean_vect <- mean_vect_d
+    } else if (type == 'monthly') {
+      data <- df_m_this
+      n_periods <- 12
+      mean_vect <- mean_vect_m
+    }
+    n_stocks <- ncol(data)
+    answer <- solver(data = data, mean_vect = mean_vect, n_samples = 1000, type = type)
+    muP <- answer[[1]]
+    sdP <- answer[[2]]
+    weights <- answer[[3]]
+    
+    # plot efficient frontier
+    mufree = rf_rate / n_periods # expected return on risk-free assets.
+    sha = (muP - mufree) / sdP # calc of Sharpe's ratio.
+    ind = which.max(sha) # tangency portfolio, which has maximum Sharpe's ratio.
+    wt <- round(weights[ind, ],2) # weights of tangency portfolio.
+    sdP_tang <- sdP[ind]
+
+    # Compute VaR and ES if option is true
+    if (getallvar || (getlastvar & (m == nrow(dates)))) {
+      vares_copula <- get_VaR_ES_tcopula(df_d_forvares, n_samples = 300, w = wt, alpha = 0.01)
+      var_copula <- vares_copula[[1]]
+      es_copula <- vares_copula[[2]]
+      
+      vares_mvst <- get_VaR_ES_mvst(df_d_forvares, n_samples = 300, w = wt, alpha = 0.01)
+      var_mvst <- vares_mvst[[1]]
+      es_mvst <- vares_mvst[[2]]
+    } else {
+      var_copula <- 0
+      es_copula <- 0 
+      var_mvst <- 0
+      es_mvst <- 0
+    }
+  
+    expected_return <- mean_vect %*% wt # expected daily return
+    expected_return_m <- mean_vect_m %*% wt # expected monthly return
+
+    # ex-post sharpe
+    sd_hist_selected <- sd(as.matrix(df_m_expostsharpe) %*% wt)
+    return_avg_selected <- mean(as.matrix(df_m_expostsharpe) %*% wt) - (rf_rate/12)
+    sharpe_expost <- return_avg_selected/sd_hist_selected
+
+    # compute next period actual return given these wt
+    # start_next<-format(as.Date(as.character(dates[(m+1),3])),"%Y-%m-%d")
+    end_next<-format(as.Date(as.character(dates[m,4])),"%Y-%m-%d")
+    
+    df_m_next<-df_m[rownames(df_m) == end_next,]
+    next_return <- as.matrix(df_m_next) %*% wt
+  
+    wt_disp <- data.frame(cbind(columns[4:(4+n_stocks-1)],c(wt)))
+    colnames(wt_disp) <- c('Stock','Weight')  
+    
+    # computing the PortfolioAbsChange for table_out so that we can use this information for BrokerageCost calculations at 2% fees.
+    # at this stage, PortfolioAbsChange happens to be the last column of the data table.
+    if (nrow(table_out) > 0) {
+      change_abs <- sum(abs(as.numeric(table_out[nrow(table_out),4:13])-wt))
+    } else if (nrow(table_out) == 0) {
+      change_abs <- 1
+    }
+    new_data <- c(dates[m,6],end,dates[m,4],wt,round(mufree,5),round(expected_return,5), round(expected_return_m,5),round(sha[ind],5),round(next_return,5), change_abs, round(var_copula,5), round(es_copula,5), round(var_mvst,5), round(es_mvst,5), round(sdP_tang,5), round(sharpe_expost ,5))
+    table_out[nrow(table_out) + 1,] <- new_data
+    
+    if (m == (nrow(dates))) {
+    g <- ggplot() + ggtitle(paste('Portfolio Allocation as at ', end)) +
+      geom_abline(intercept = mufree, slope = (muP[ind] - mufree) / sdP[ind], lwd = 2)+
+      geom_point(aes(x=sdP, y=muP), color = 'blue') +
+      geom_point(aes(x=sdP[ind], y=muP[ind]), color = 'red', size = 4) +
+      geom_label(aes(x=sdP[ind], y=muP[ind]), label.padding = unit(0.4, "lines"),
+                 label='Selected Portfolio',
+                 label.size = 0.3, hjust = 1.1, vjust = 0) +
+      xlim(0,max(sdP)) +
+      ylim(0,max(muP)*1.1) +
+      annotate(geom = "table",
+               x = 0,
+               y = max(muP)*1.1,
+               label = list(wt_disp)) +
+      xlab('Risk') + ylab('Return')
+    }
+
+  }
+  return (list(table_out, g, weights, ind))
+}
+
+```
+
+```{r getoutputs1, echo=FALSE,warning=FALSE}
+outputs <- go(n_lags, markowitz, getallvar = FALSE)
+table_out <- outputs[[1]]
+g <- outputs[[2]]
+ww <- outputs[[3]]
+colnames(ww) <- stocks
+ind <- outputs[[4]]
+```
+
+<!-- These parts of the code are unused to keep the report concise. -->
+```{r showportfolios1, echo=FALSE,warning=FALSE, out.width="75%", fig.align = 'center', fig.show="hold"}
+# print(g)
+```
+
+<!-- As an example, the tangency portfolio selected for the month beginning 2022-10-03 is shown above. -->
+
+```{r showportfoliosa, echo=FALSE,warning=FALSE, out.width="75%", fig.align = 'center', fig.show="hold"}
+# par(xpd=TRUE)
+# barplot(t(ww[sort(c(seq(1,nrow(ww),10),ind)),]),col=rainbow(ncol(ww)) , main='Selected Portfolio')
+# legend("topright", legend = stocks,
+#        fill = rainbow(ncol(ww)), ncol = 1,
+#        inset=c(-0.06,0), cex = 0.6)
+# axis(side=1, at =which(sort(c(seq(1,nrow(ww),10),ind))==ind)+0.5, labels='Selected')
+```
+
+<!-- The selected portfolio among the series of portfolios at the efficient frontier is seen above. -->
+
+
+```{r getmorestats1, echo=FALSE,warning=FALSE}
+genAdditionalColumns <- function(table_out,start_value){
+  col_change <- c(stocks,'RF','ER','ER_M','Sharpe', 'NextMonthReturns','Volatility')
+  table_out[col_change] <- sapply(table_out[col_change],as.numeric)
+  # table_out$CumulativeReturn <- cumprod(as.numeric(table_out$NextMonthReturns)+1)
+  
+  table_out$PortfolioAbsChange <- as.numeric(table_out$PortfolioAbsChange)
+  table_out$CumulativeReturn <- rep(0,nrow(table_out))
+  table_out$CumulativeReturnNoCost <- rep(0,nrow(table_out))
+  table_out$BrokerageCost <- rep(0,nrow(table_out))
+  for (r in 1:nrow(table_out)) {
+    if (r == 1) {
+      # for the first cumulative calculations, we add +1 to start off recording our cumulative returns for each end of the month.
+      table_out[r,c('CumulativeReturn')] <- table_out[r,c('NextMonthReturns')] + 1
+      table_out[r,c('CumulativeReturnNoCost')] <- table_out[r,c('NextMonthReturns')] + 1
+    } else {
+      # for all other end-months calculation, we want to see how our portfolio performs in terms of returns.
+      # CumulativeReturn considers the cost of brokerage.
+      table_out[r,c('CumulativeReturn')] <- (table_out[r,c('NextMonthReturns')] + 1) * table_out[(r-1),c('CumulativeReturn')] - 
+                                            table_out[(r-1),c('CumulativeReturn')] * table_out[r,c('PortfolioAbsChange')] * commission
+      table_out[r,c('BrokerageCost')] <- table_out[(r-1),c('CumulativeReturn')] * table_out[r,c('PortfolioAbsChange')] * commission
+      # CumulativeReturnNoCost does not consider the cost of brokerage, where we assumed 2% commission fees on platforms when there is an PortfolioAbsChange.
+      table_out[r,c('CumulativeReturnNoCost')] <- (table_out[r,c('NextMonthReturns')] + 1) * table_out[(r-1),c('CumulativeReturn')]
+    }
+  }
+  
+  table_out$BrokerageCost <- table_out$BrokerageCost*start_value
+  table_out$CumulativeReturnNoCost <-table_out$CumulativeReturnNoCost*start_value
+  table_out$CumulativeReturn <-table_out$CumulativeReturn*start_value
+  table_out$AnnualizedVolatilty <- table_out$Volatility*sqrt(253)
+  table_out$AnnualizedReturn <- table_out$NextMonthReturns*12
+
+  return (table_out)
+}
+
+table_out <- genAdditionalColumns(table_out,start_value)
+```
+
+```{r showreturns1, echo=FALSE,warning=FALSE, out.width="75%", fig.align = 'center'}
+par(mfrow = c(1, 2), cex=0.75)
+xx <- seq(1,nrow(table_out))
+date_x <- as.Date(as.character(table_out$NextRebalance))
+ylim <- c(min(cbind(table_out$NextMonthReturns,table_out$ER_M)), max(cbind(table_out$NextMonthReturns,table_out$ER_M)))
+plot(xx, table_out$ER_M, type='l', col = 'red', ylim = ylim, main='Expected Return vs Actual Return',
+     ylab = 'Return', xlab = paste('Months from', first_month))
+lines(xx, table_out$NextMonthReturns, col='blue')
+axis(side = 1, at = seq(1,length(table_out$NextMonthReturns),1))
+legend(x = "topleft",
+       legend=c("Expected Returns", "Actual Returns"), 
+       fill = c("red","blue"))
+
+plot(table_out$CumulativeReturn, type='l', main = 'Portfolio Value over time',
+     ylab = 'Value', xlab = paste('Months from', first_month), col='blue')
+lines(table_out$CumulativeReturnNoCost, col='red')
+abline(h=10000, lty = 2)
+axis(side = 1, at = seq(1,length(table_out$CumulativeReturn),1))
+
+legend(x = "topleft",
+       legend=c("Portfolio Value incl Brokerage Fee", "Portfolio Value excl Brokerage Fee"), 
+       fill = c("blue","red"))
+```
+
+Comparing the expected vs actual returns from our selected portfolio at each month, the trajectory of our portfolio value starting from `r first_month` is shown above.
+
+```{r comparelags1, echo=FALSE,warning=FALSE, out.width="75%", fig.align = 'center'}
+nlags <- c(1,3,6,9,12,18,24)
+returns <- c()
+
+for (lag in nlags) {
+  try <- go(lag, markowitz, getallvar = FALSE, getlastvar = FALSE)
+  out <- try[[1]]
+  out <- genAdditionalColumns(out,start_value)
+  ret <- cbind(seq(1,length(out$CumulativeReturn)), out$CumulativeReturn, rep(lag,length(out$CumulativeReturn)))
+  returns <- rbind(returns,ret)
+}
+colnames(returns) <- c('AfterNPeriods','CumulativeReturn','Lags')
+returns <- data.frame(returns)
+ggplot(returns, aes(x = AfterNPeriods,y = CumulativeReturn,colour = factor(Lags))) + geom_line(size = 2) +
+        xlab(paste('Months from', first_month)) + ylab('Portfolio Value') + labs(color='Lookback Months') + ggtitle('Comparing different lookback months (Markowitz Model)')
+lastperiodreturn_mm <- returns[returns$AfterNPeriods == max(returns$AfterNPeriods),]
+bestlookback_mm <- lastperiodreturn_mm[which.max(lastperiodreturn_mm$CumulativeReturn),]
+```
+
+Comparing different lookback periods, under the Markowitz model, `r bestlookback_mm$Lags[[1]]` lookback months worked best for performing allocation of the 10 selected stocks, returning the highest portfolio value of \$`r round(bestlookback_mm$CumulativeReturn[[1]],2)` at the end of the investment period of 16 months, on 31 October 2021​.
+
+## Michaud’s Resampled-Efficiency Method
+
+We perform the same back testing procedure using the RE method, comparing the cumulative returns at the end of the investment period as well as identifying the lookback period that gives the best returns. We proceed directly to determining the lookback period that works best with the RE method, comparing the best cumulative return with that from the Markowitz model.
+
+```{r michaud, echo=FALSE,warning=FALSE}
+
+REsolver <- function(data, mean_vect, n_samples, type){
+    n_tries <- n_samples
+    n_stocks <- ncol(data)
+    
+    cov_mat <- cov(data) # covariance matrix.
+    sd_vect <- sqrt(diag(cov_mat)) # standard deviation vector, diagonal of the covariance matrix.
+    Amat = cbind(rep(1, n_stocks), mean_vect, diag(1, nrow = n_stocks)) # setting the constraint matrix.
+    muP = seq(min(mean_vect) + 0.0001, max(mean_vect) - 0.0001,
+              length = n_tries)
+
+    fit_skewt = mst.mple(y = data, penalty = NULL)    
+
+    portfolio_ret <- muP*0
+    portfolio_risk <- muP*0
+    portfolio_wt <- matrix(0,n_tries,n_stocks)
+
+    # muP are the possible values of the expected return for 1000 different target values.
+
+    #To prevent numerical errors, the target expected returns will start 0.0001
+    #above the smallest expected stock return and end 0.0001 below the largest expected stock return
+    sdP = muP # setting up the storage of std dev of portfolio
+    weights = matrix(0, nrow = n_tries, ncol = n_stocks) # setting up storage of weights of portfolio
+
+        
+    n_resamples = 100  # number of resampling
+    for (rr in 1:n_resamples) {
+        sim <- rmst(n=150,dp = fit_skewt$dp)
+            
+        # simulated mu & cov
+        muP_sim  <- colMeans(sim)
+        cov_sim <- cov(sim)
+            
+        rets_sim <- seq(min(muP_sim),max(muP_sim),length=(n_tries+2))
+        rets_sim <- rets_sim[2:(n_tries+1)]
+            
+        portfolio_rets_sim <- rets_sim
+        portfolio_risk_sim <- rets_sim*0
+        portfolio_wt_sim <- matrix(0,n_tries,n_stocks)
+        
+        # calculate efficient frontier
+        for (i in 1:n_tries) {
+            Dmat <- 2*cov_sim
+            dvec <- rep(0,n_stocks) 
+            Amat <- cbind(rep(1, n_stocks), muP_sim, diag(1, nrow = n_stocks)) # setting the constraint matrix.
+
+            bvec <- c(1, rets_sim[i], rep(0,n_stocks)) # constraint vector
+            m <- solve.QP(Dmat = Dmat, dvec = rep(0, n_stocks),
+             Amat = Amat, bvec = bvec, meq = 2)
+
+            # output
+            portfolio_risk_sim[i]  <- sqrt(m$value)
+            portfolio_wt_sim[i,] <- t(m$solution)
+        }  
+            
+        # sum of resampling portfolios before average
+        portfolio_ret <- portfolio_ret + portfolio_rets_sim
+        portfolio_wt <- portfolio_wt + portfolio_wt_sim
+    }
+        
+    # average of resampling portfolios
+    portfolio_wt <- portfolio_wt/n_resamples
+    portfolio_ret <- portfolio_ret/n_resamples
+        
+    # portfolio SD and Expected Return
+    for (i in 1:n_tries) {
+        portfolio_ret[i] <- portfolio_wt[i,]%*%mean_vect
+        portfolio_risk[i] <- sqrt(portfolio_wt[i,]%*%cov_mat%*%portfolio_wt[i,])
+    }
+    return (list(muP,portfolio_risk,portfolio_wt))
+} 
+
+# outputs <- go(n_lags, REsolver, getallvar = FALSE)
+# table_out_re <- outputs[[1]]
+# g <- outputs[[2]]
+# ww <- outputs[[3]]
+# colnames(ww) <- stocks
+# ind <- outputs[[4]]
+# 
+# table_out_re <- genAdditionalColumns(table_out_re,start_value)
+```
+```{r showportfolio2, echo=FALSE,warning=FALSE, out.width="75%", fig.align = 'center'}
+# par(xpd=TRUE)
+# barplot(t(ww[sort(c(seq(1,nrow(ww),10),ind)),]),col=rainbow(ncol(ww)), main='Selected Portfolio')
+# legend("topright", legend = stocks,
+#        fill = rainbow(ncol(ww)), ncol = 1,
+#        inset=c(-0.06,0), cex = 0.6)
+# axis(side=1, at =which(sort(c(seq(1,nrow(ww),10),ind))==ind)+0.5, labels='Selected')
+```
+
+```{r showreturns2, echo=FALSE,warning=FALSE, out.width="100%", fig.align = 'center'}
+# par(mfrow = c(1, 2), cex=0.7)
+# xx <- seq(1,nrow(table_out_re))
+# date_x <- as.Date(as.character(table_out_re$NextRebalance))
+# ylim <- c(min(cbind(table_out_re$NextMonthReturns,table_out_re$ER_M)), max(cbind(table_out_re$NextMonthReturns,table_out_re$ER_M)))
+# plot(xx, table_out_re$ER_M, type='l', col = 'red', ylim = ylim, main='Expected Return vs Actual Return',
+#      ylab = 'Return', xlab = paste('Months from', first_month))
+# lines(xx, table_out_re$NextMonthReturns, col='blue')
+# axis(side = 1, at = seq(1,length(table_out_re$NextMonthReturns),1))
+# legend(x = "topleft",
+#        legend=c("Expected Returns", "Actual Returns"), 
+#        fill = c("red","blue"))
+# 
+# plot(table_out_re$CumulativeReturn, type='l', main = 'Portfolio Value over time',
+#      ylab = 'Value', xlab = paste('Months from', first_month), col='blue')
+# lines(table_out_re$CumulativeReturnNoCost, col='red')
+# abline(h=10000, lty = 2)
+# axis(side = 1, at = seq(1,length(table_out_re$CumulativeReturn),1))
+# 
+# legend(x = "topleft",
+#        legend=c("Portfolio Value incl Brokerage Fee", "Portfolio Value excl Brokerage Fee"), 
+#        fill = c("blue","red"))
+```
+
+```{r comparelags2, echo=FALSE,warning=FALSE, out.width="75%", fig.align = 'center'}
+nlags <- c(1,3,6,9,12,18,24)
+returns <- c()
+
+for (lag in nlags) {
+  try <- go(lag, REsolver, getallvar = FALSE, getlastvar = FALSE)
+  out <- try[[1]]
+  out <- genAdditionalColumns(out,start_value)
+  ret <- cbind(seq(1,length(out$CumulativeReturn)), out$CumulativeReturn, rep(lag,length(out$CumulativeReturn)))
+  returns <- rbind(returns,ret)
+}
+colnames(returns) <- c('AfterNPeriods','CumulativeReturn','Lags')
+returns <- data.frame(returns)
+ggplot(returns, aes(x = AfterNPeriods,y = CumulativeReturn,colour = factor(Lags))) + geom_line(size = 2) +
+        xlab(paste('Months from', first_month)) + ylab('Portfolio Value') + labs(color='Lookback Months') + ggtitle('Comparing different lookback months (RE Method)')
+lastperiodreturn_re <- returns[returns$AfterNPeriods == max(returns$AfterNPeriods),]
+bestlookback_re <- lastperiodreturn_re[which.max(lastperiodreturn_re$CumulativeReturn),]
+```
+
+Using Michaud’s Resampling-Efficiency method, `r bestlookback_re$Lags[[1]]` lookback months worked best for performing the allocation of the 10 selected stocks, returning the highest portfolio value of \$`r round(bestlookback_re$CumulativeReturn[[1]],2)` at the end of the investment period of 16 months, on 31 October 2021.
+
+# Results
+
+```{r finalallocation, echo=FALSE,warning=FALSE}
+alloc <- table_out[nrow(table_out),4:13]
+rownames(alloc) <- c(NULL)
+kable(alloc)
+```
+
+After performing a final portfolio rebalancing on 30 September 2022 and obtaining the above allocation, we showed that the Markowitz model performed better, achieving a return of `r round(((bestlookback_mm$CumulativeReturn[[1]]/10000)-1)*100,2)`% over the investment period of 1 Jul 2021 to 31 Oct 2022, a much better return when compared to the composite index which the stocks are a component of, the NASDAQ-100 index, which had a `r round(((11405.57/14530.63)-1)*100,2)`% change over the same period.
+
+```{r valresults, echo=FALSE,warning=FALSE}
+val <-table_out[(nrow(table_out)-2):nrow(table_out),c('AnnualizedReturn',"AnnualizedVolatilty",'Ex-Post Sharpe')]
+rownames(val) <- c('August 2022','September 2022','October 2022')
+colnames(val) <- c('Annualized Return',"Annualized Volatilty",'Ex-Post Sharpe')
+kable(val)
+```
+
+The table above shows our validation period results for August, September 2022 and test period October 2022 result. Compared to the NASDAQ-100 index which rose `r round(((11405.57/10971.22)-1)*100,2)`%, our portfolio method achieved a return of `r round(tail(table_out$NextMonthReturns,1)*100,2)`% in the month of October 2022. The per dollar invested VaR and ES was `r round(as.numeric(tail(table_out[,c('VaR (MVST)')],1)),2)` and `r round(as.numeric(tail(table_out[,c('ES (MVST)')],1)),2)` respectively.
+
+# Conclusion
+
+We set out with the objective of identifying a portfolio selection framework which can serve as a guide to personal wealth accumulation for retail investors who may not have access to portfolio managers. For our experiments, we identified a list of 10 stocks listed on NASDAQ that are from different industries to ensure diversity. We then reviewed two portfolio selection techniques, the Markowitz and RE methods, and showed that the Markowitz model performed better on our selected stocks, subject to a specific lookback period. The set of codes that were used to generate this report and conduct the experiments are provided for users to explore the applicability of the framework to the investment objectives.
+
+Some of the limitations of the study above are: Using a more robust stock selection strategy to ensure that the 10 stocks selected are justified, instead of being the largest market leaders in their industries. In addition, risk-free rate for is fixed at 2%, however, the real-life scenario is that the rates are varying with years passed.
+
+Beyond this report, we suggest that users explore alternative extensions to this framework, such as utilizing regime detection methods to determine the number of lookback periods. 
+
+
+# References
+
+[1] Markowitz, H. (1959) Portfolio Selection: Efficient Diversification of Investment, Wiley, New York.  
+[2] Michaud, Richard & Michaud, Robert. (2007). Estimation Error and Portfolio Optimization: A Resampling Solution. Journal of Investment Management. Vol. 6. pp. 8 - 28.   
+[3] Ruppert, D., & Matteson, D. (2015) Statistics and Data Analysis for Financial Engineering. Springer, New York.
